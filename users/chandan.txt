@@ -1,0 +1,32 @@
+# =====================================================================
+# Candidate Profile: Chandan Malla
+# =====================================================================
+Name: Chandan Malla
+Email: chandanmalla@gmail.com
+Phone: +91 98765 43210
+Role: Senior Machine Learning Engineer & Applied Scientist
+Experience: 6+ Years
+Target Locations: India (Bangalore, Hyderabad, Delhi NCR), UK (London), Australia (Sydney)
+
+Summary:
+Senior Machine Learning Engineer and Applied Scientist with ~6 years of experience specializing in recommendation systems, search and ranking, candidate retrieval, two-tower deep learning architectures, CTR prediction, and applied Generative AI / LLM systems. Proven track record in production ML, high-scale experimentation, and low-latency inference serving.
+
+Primary Skills:
+- Recommendation Systems (RecSys)
+- Search & Information Retrieval
+- Ranking & Re-ranking Algorithms
+- Two-Tower Embeddings & Candidate Generation
+- CTR Prediction & Click Modeling
+- Personalization & User Modeling / Sequence Modeling
+- Deep Learning & Neural Networks
+- Large Language Models (LLMs) & Generative AI
+- Natural Language Processing (NLP) & Semantic Search
+- PyTorch & Python
+- MLOps, Model Serving & Low-Latency Inference
+- Experimentation, A/B Testing & Causal Inference
+- Distributed Training & Feature Engineering
+- SQL & High-scale Data Processing
+
+Exclusions:
+- Intern, Graduate, Junior, Vice President, Director, Principal, Staff
+

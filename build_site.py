@@ -1,116 +1,59 @@
 """
 Build Site Generator
 ====================
-Reads tracked_jobs.json (or found_jobs_latest.json) and compiles:
-1. data/jobs.json
-2. index.html (self-contained, responsive dashboard with embedded dataset, Chart.js,
-   and interactive local application tracking via localStorage)
+Compiles:
+1. data/scraped_jobs.json (raw scraped jobs pool)
+2. data/refined_jobs.json (skill-refined jobs categorized per user)
+3. data/jobs.json (synced for API and dashboard compatibility)
+4. index.html (self-contained, responsive dashboard with dynamic user filtering,
+   dynamic KPI stats, dynamic charts, and per-user application tracking)
 
 Run with:
     python build_site.py
 """
 
 import json
+import sys
 from pathlib import Path
 from datetime import datetime, timezone
 
 PROJECT_DIR = Path(__file__).parent
 DATA_DIR    = PROJECT_DIR / "data"
+USERS_DIR   = PROJECT_DIR / "users"
+SCRIPTS_DIR = PROJECT_DIR / "scripts"
+
 DATA_DIR.mkdir(exist_ok=True)
+USERS_DIR.mkdir(exist_ok=True)
 
-TRACKED_PATH = Path(r"C:\Users\chand\Downloads\Job Search\job-tracker\tracked_jobs.json")
-if not TRACKED_PATH.exists():
-    TRACKED_PATH = Path(r"C:\Users\chand\Downloads\Job Search\job-tracker\found_jobs_latest.json")
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
 
-CONFIG_PATH = Path(r"C:\Users\chand\Downloads\Job Search\job-tracker\config.json")
+from refine_jobs import refine_jobs
 
-def load_user_profile():
-    if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, encoding="utf-8") as f:
-            cfg = json.load(f)
-            return cfg.get("user_profile", {})
-    return {}
-
-def load_jobs_data():
-    with open(TRACKED_PATH, encoding="utf-8") as f:
-        data = json.load(f)
-    if isinstance(data, dict):
-        return data.get("all_jobs", []), data.get("applied", []), data.get("skipped", [])
-    return data, [], []
 
 def build_dashboard():
-    raw_jobs, db_applied, db_skipped = load_jobs_data()
-    uprofile = load_user_profile()
-    user_name = uprofile.get("name", "Chandan Malla")
-    user_email = uprofile.get("email", "chandanmalla@gmail.com")
-    user_phone = uprofile.get("phone", "[Phone Number]")
-    now_ist = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M IST")
+    # 1. Run the job refiner against all user profiles in users/*.txt
+    print("[build_site] Refining jobs for all users in users/...")
+    refined_data = refine_jobs()
 
-    jobs = []
-    for idx, j in enumerate(raw_jobs, start=1):
-        title = j.get("job_title", "")
-        # Strictly exclude Principal and Staff level roles per user request
-        if any(w in title.lower() for w in ["principal", "staff"]):
-            continue
+    if not refined_data or not refined_data.get("users"):
+        print("[build_site] Error: No refined user data generated!")
+        sys.exit(1)
 
-        loc = j.get("location", "")
-        country = "India" if any(w in loc.lower() for w in ["india", "bangalore", "bengaluru", "hyderabad", "delhi", "gurgaon", "gurugram", "noida", "mumbai", "chennai"]) \
-            else "UK" if any(w in loc.lower() for w in ["uk", "london", "united kingdom", "cambridge"]) \
-            else "Australia" if any(w in loc.lower() for w in ["australia", "sydney", "melbourne"]) \
-            else "Global / Other"
+    now_ist = refined_data.get("generated_at", datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M IST"))
+    default_user_id = refined_data.get("default_user", list(refined_data["users"].keys())[0])
+    default_user = refined_data["users"][default_user_id]
+    
+    # Format refined data as JSON string for embedding
+    refined_json_str = json.dumps(refined_data, ensure_ascii=False)
 
-        city = "Bangalore" if "bangalore" in loc.lower() or "bengaluru" in loc.lower() \
-            else "Hyderabad" if "hyderabad" in loc.lower() \
-            else "Delhi NCR" if any(w in loc.lower() for w in ["delhi", "gurgaon", "gurugram", "noida"]) \
-            else "Mumbai" if "mumbai" in loc.lower() \
-            else "London" if "london" in loc.lower() \
-            else "Sydney" if "sydney" in loc.lower() \
-            else loc
-
-        visa_raw = j.get("visa_sponsorship", "Unknown")
-        visa_cat = "Confirmed" if "confirmed" in visa_raw.lower() \
-            else "Plausible but unverified" if "plausible" in visa_raw.lower() \
-            else "N/A (India role)" if "n/a" in visa_raw.lower() or country == "India" \
-            else "Unknown"
-
-        exp_raw = j.get("experience_fit", "Good fit")
-        exp_cat = "Strong" if "strong" in exp_raw.lower() \
-            else "Stretch" if "stretch" in exp_raw.lower() or j.get("stretch") \
-            else "Good"
-
-        jobs.append({
-            "id": j.get("job_id", f"J{idx:03d}"),
-            "company": j.get("company", ""),
-            "title": j.get("job_title", ""),
-            "location": loc,
-            "city": city,
-            "country": country,
-            "posted": j.get("date_posted", "Unverified"),
-            "exp": exp_raw,
-            "expCat": exp_cat,
-            "tech": j.get("technical_fit", ""),
-            "visa": visa_raw,
-            "visaCat": visa_cat,
-            "reloc": j.get("relocation", "Not stated"),
-            "link": j.get("link", ""),
-            "source": j.get("source", ""),
-            "why_fits": j.get("why_fits", ""),
-            "isNew": True
-        })
-
-    # Save to data/jobs.json
-    out_json = DATA_DIR / "jobs.json"
-    with open(out_json, "w", encoding="utf-8") as f:
-        json.dump(jobs, f, indent=2, ensure_ascii=False)
-    print(f"Saved {len(jobs)} jobs to {out_json}")
-
-    # Build HTML Dashboard
+    # 2. Generate HTML Dashboard
     html = f"""<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ML & Data Science Job Tracker | Live Dashboard</title>
+  <title>ML & Data Science Job Tracker | Multi-User Live Dashboard</title>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -193,6 +136,95 @@ def build_dashboard():
       margin: 0 auto;
       padding: 24px 32px;
     }}
+    
+    /* Candidate Profile Banner */
+    .user-profile-bar {{
+      background: #ffffff;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px 24px;
+      margin-bottom: 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 18px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.03);
+    }}
+    .user-info-group {{
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }}
+    .user-avatar {{
+      width: 52px;
+      height: 52px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: 0.05em;
+      box-shadow: 0 2px 8px rgba(30,64,175,0.25);
+    }}
+    .user-details {{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }}
+    .user-name-row {{
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+    }}
+    .user-dropdown {{
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--navy);
+      padding: 6px 12px;
+      border-radius: 8px;
+      border: 1.5px solid #cbd5e1;
+      background: #f8fafc;
+      cursor: pointer;
+    }}
+    .user-dropdown:focus {{
+      outline: none;
+      border-color: var(--primary-light);
+      box-shadow: 0 0 0 2px rgba(59,130,246,0.15);
+    }}
+    .user-title-tag {{
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }}
+    .user-skills-wrap {{
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 6px;
+    }}
+    .skill-pill {{
+      background: #eff6ff;
+      color: #1e40af;
+      border: 1px solid #bfdbfe;
+      border-radius: 999px;
+      padding: 3px 10px;
+      font-size: 11px;
+      font-weight: 600;
+    }}
+    .user-actions {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+    }}
+
+    /* KPI Grid */
     .kpi-grid {{
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -382,6 +414,26 @@ def build_dashboard():
     .badge-strong {{ background: var(--green-bg); color: #065f46; }}
     .badge-good {{ background: var(--blue-bg); color: #1e40af; }}
     .badge-stretch {{ background: var(--amber-bg); color: #92400e; }}
+    
+    .badge-skill {{
+      background: #f1f5f9;
+      color: #334155;
+      border: 1px solid #cbd5e1;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 4px;
+      display: inline-block;
+      margin-top: 3px;
+      margin-right: 3px;
+    }}
+    .user-fit-note {{
+      font-size: 11px;
+      color: #0369a1;
+      margin-top: 4px;
+      font-weight: 500;
+      line-height: 1.4;
+    }}
+
     .btn-apply {{
       display: inline-block;
       padding: 6px 12px;
@@ -474,7 +526,7 @@ def build_dashboard():
     <div class="header-content">
       <div>
         <h1>🎯 Machine Learning & Data Science Job Tracker</h1>
-        <p>Curated verified-open roles (Senior, Lead, Applied Scientist) across India, UK & Australia</p>
+        <p>Curated verified-open roles matched to candidate skills across India, UK & Australia</p>
       </div>
       <div class="refresh-badge">
         <span class="pulse"></span> Last Updated: {now_ist}
@@ -483,13 +535,33 @@ def build_dashboard():
   </header>
 
   <main>
+    <!-- Dynamic Candidate Profile Banner -->
+    <section class="user-profile-bar">
+      <div class="user-info-group">
+        <div class="user-avatar" id="userAvatar">CM</div>
+        <div class="user-details">
+          <div class="user-name-row">
+            <label for="selUser" style="font-size:12px;font-weight:700;color:var(--text-muted);letter-spacing:0.04em;">CANDIDATE:</label>
+            <select id="selUser" class="user-dropdown" aria-label="Select candidate user"></select>
+          </div>
+          <div class="user-title-tag" id="userTargetRole">Senior Machine Learning Engineer & Applied Scientist</div>
+          <div class="user-skills-wrap" id="userSkillsPills"></div>
+        </div>
+      </div>
+      <div class="user-actions">
+        <button class="btn-action" id="btnEditContact" title="Update candidate contact information">⚙️ Candidate Info</button>
+        <button class="btn-action" id="btnSyncTelegram" style="background:#0284c7;color:#fff;border-color:#0284c7;font-weight:600;" title="Open Telegram with pre-filled /applied command">📲 Sync to Telegram</button>
+      </div>
+    </section>
+
+    <!-- Dynamic KPI Grid (Changes per candidate) -->
     <section class="kpi-grid">
       <div class="kpi-card highlight">
-        <div class="lbl">Total Active Roles</div>
+        <div class="lbl">Total Matched Roles</div>
         <div class="val" id="kpiTotal">0</div>
       </div>
       <div class="kpi-card applied-kpi">
-        <div class="lbl">Applied by You</div>
+        <div class="lbl">Applied by Candidate</div>
         <div class="val" id="kpiApplied">0</div>
       </div>
       <div class="kpi-card">
@@ -510,6 +582,7 @@ def build_dashboard():
       </div>
     </section>
 
+    <!-- Dynamic Charts Grid (Updates per candidate) -->
     <section class="charts-grid">
       <div class="chart-box">
         <h3>Top Hiring Companies</h3>
@@ -525,8 +598,10 @@ def build_dashboard():
       </div>
     </section>
 
+    <!-- Filter & Table Card -->
     <section class="table-card">
       <div class="filter-bar">
+        <select id="selUserFilter" class="status-select" title="Switch candidate user"></select>
         <input type="search" id="searchQ" class="search-input" placeholder="🔍 Search company, role title, skills, ID…">
         <select id="selStatus" class="status-select">
           <option value="all">All Roles</option>
@@ -539,9 +614,7 @@ def build_dashboard():
         <select id="selCompany"><option value="">All Companies</option></select>
         <select id="selVisa"><option value="">All Sponsorship</option></select>
         <select id="selExp"><option value="">All Experience Fit</option></select>
-        <button class="btn-action" id="btnCopyApplied" title="Copy comma-separated list of your applied Job IDs">📋 Copy IDs</button>
-        <button class="btn-action" id="btnSyncTelegram" style="background:#0284c7;color:#fff;border-color:#0284c7;font-weight:600;" title="Open Telegram with pre-filled /applied command for all your marked jobs">📲 Sync to Telegram</button>
-        <button class="btn-action" id="btnEditContact" title="Update your name, phone number, and email for referral messages">⚙️ My Contact Info</button>
+        <button class="btn-action" id="btnCopyApplied" title="Copy comma-separated list of applied Job IDs">📋 Copy IDs</button>
         <button class="btn-action" id="btnReset">Reset</button>
         <span class="counter-tag" id="rowCounter">0 roles</span>
       </div>
@@ -551,12 +624,12 @@ def build_dashboard():
           <thead>
             <tr>
               <th onclick="sortTable('id')">ID</th>
-              <th>My Status</th>
+              <th>Status</th>
               <th onclick="sortTable('company')">Company</th>
               <th onclick="sortTable('title')">Job Title</th>
               <th onclick="sortTable('city')">Location</th>
               <th onclick="sortTable('expCat')">Fit</th>
-              <th>Technical Match</th>
+              <th>Technical & Skill Match</th>
               <th onclick="sortTable('visaCat')">Visa Sponsorship</th>
               <th>Application</th>
             </tr>
@@ -568,21 +641,18 @@ def build_dashboard():
   </main>
 
   <footer>
-    <p>Curated automatically via ATS feeds (Greenhouse, Lever, Ashby, Workday, Microsoft Careers) &middot; Amazon subsidiaries strictly excluded</p>
+    <p>Curated automatically via ATS feeds &middot; Scraped pool categorized per user skills txt &middot; Amazon subsidiaries strictly excluded</p>
   </footer>
 
-  <script id="jobs-data" type="application/json">{json.dumps(jobs, ensure_ascii=False)}</script>
+  <!-- Embedded Refined Dataset -->
+  <script id="jobs-data" type="application/json">{refined_json_str}</script>
 
   <script>
-    const JOBS = JSON.parse(document.getElementById('jobs-data').textContent);
-    const DB_APPLIED = {json.dumps(db_applied)};
-    const DB_SKIPPED = {json.dumps(db_skipped)};
-
-    // Persistent storage for Applied & Skipped jobs, merging DB state + browser localStorage
-    let appliedJobs = new Set([...DB_APPLIED, ...JSON.parse(localStorage.getItem('applied_jobs') || '[]')]);
-    let skippedJobs = new Set([...DB_SKIPPED, ...JSON.parse(localStorage.getItem('skipped_jobs') || '[]')]);
+    // Load dataset from embedded script tag (with fallback)
+    let DATA = JSON.parse(document.getElementById('jobs-data').textContent);
 
     let state = {{
+      user: DATA.default_user || Object.keys(DATA.users)[0],
       search: '',
       status: 'unapplied',
       country: '',
@@ -594,41 +664,224 @@ def build_dashboard():
       sortAsc: true
     }};
 
-    function updateStats() {{
-      document.getElementById('kpiTotal').textContent = JOBS.length;
-      document.getElementById('kpiApplied').textContent = appliedJobs.size;
-      document.getElementById('kpiIndia').textContent = JOBS.filter(j => j.country === 'India').length;
-      document.getElementById('kpiIntl').textContent = JOBS.filter(j => j.country === 'UK' || j.country === 'Australia').length;
-      document.getElementById('kpiVisa').textContent = JOBS.filter(j => j.visaCat === 'Confirmed' || j.visaCat.includes('Plausible')).length;
-      document.getElementById('kpiCompanies').textContent = new Set(JOBS.map(j => j.company)).size;
+    let appliedJobs = new Set();
+    let skippedJobs = new Set();
+
+    let chartCompanyInstance = null;
+    let chartLocationInstance = null;
+    let chartVisaInstance = null;
+
+    // Initialize User Dropdowns
+    function initUserDropdowns() {{
+      const selUser = document.getElementById('selUser');
+      const selUserFilter = document.getElementById('selUserFilter');
+      
+      selUser.innerHTML = '';
+      selUserFilter.innerHTML = '';
+
+      Object.entries(DATA.users || {{}}).forEach(([uid, u]) => {{
+        const opt = document.createElement('option');
+        opt.value = uid;
+        opt.textContent = `${{u.name}} (${{u.stats ? u.stats.total : (u.jobs ? u.jobs.length : 0)}} roles)`;
+        selUser.appendChild(opt);
+
+        const opt2 = opt.cloneNode(true);
+        selUserFilter.appendChild(opt2);
+      }});
+
+      selUser.addEventListener('change', e => switchUser(e.target.value));
+      selUserFilter.addEventListener('change', e => switchUser(e.target.value));
     }}
 
-    updateStats();
+    // Switch active candidate user and re-calculate all stats, charts, and table
+    function switchUser(userId) {{
+      if (!DATA.users || !DATA.users[userId]) {{
+        userId = Object.keys(DATA.users)[0];
+      }}
+      state.user = userId;
+      const user = DATA.users[userId];
 
-    // Populate dropdowns
-    function populateFilter(id, items) {{
+      // Sync dropdowns
+      document.getElementById('selUser').value = userId;
+      document.getElementById('selUserFilter').value = userId;
+
+      // Update Profile Banner
+      const initials = (user.name || userId)
+        .split(' ')
+        .map(n => n[0])
+        .join('')
+        .substring(0, 2)
+        .toUpperCase();
+      document.getElementById('userAvatar').textContent = initials;
+      document.getElementById('userTargetRole').textContent = `${{user.role || 'Candidate'}} · ${{user.experience || ''}}`;
+
+      // Update skills pills
+      const pillsContainer = document.getElementById('userSkillsPills');
+      if (pillsContainer) {{
+        const topSkills = (user.skills || []).slice(0, 7);
+        pillsContainer.innerHTML = topSkills.map(s => `<span class="skill-pill">${{s}}</span>`).join('');
+      }}
+
+      // Load per-user tracking from localStorage
+      const storedApplied = localStorage.getItem('applied_jobs_' + userId);
+      const storedSkipped = localStorage.getItem('skipped_jobs_' + userId);
+
+      if (storedApplied !== null) {{
+        appliedJobs = new Set(JSON.parse(storedApplied));
+      }} else if (userId === 'chandan') {{
+        // Seamless migration for initial chandan user
+        appliedJobs = new Set(JSON.parse(localStorage.getItem('applied_jobs') || '[]'));
+      }} else {{
+        appliedJobs = new Set();
+      }}
+
+      if (storedSkipped !== null) {{
+        skippedJobs = new Set(JSON.parse(storedSkipped));
+      }} else if (userId === 'chandan') {{
+        skippedJobs = new Set(JSON.parse(localStorage.getItem('skipped_jobs') || '[]'));
+      }} else {{
+        skippedJobs = new Set();
+      }}
+
+      // Update dropdown filters for this user's jobs
+      const userJobs = user.jobs || [];
+      updateFilterDropdowns(userJobs);
+
+      // Recalculate stats & update KPI cards
+      updateStats(userJobs);
+
+      // Re-render Charts
+      renderCharts(userJobs);
+
+      // Re-render Table
+      renderTable();
+    }}
+
+    function populateDropdown(id, items, defaultLabel) {{
       const el = document.getElementById(id);
+      const curVal = el.value;
+      el.innerHTML = `<option value="">${{defaultLabel}}</option>`;
       const unique = [...new Set(items.filter(Boolean))].sort();
       unique.forEach(item => {{
         const opt = document.createElement('option');
         opt.value = item;
         opt.textContent = item;
+        if (item === curVal) opt.selected = true;
         el.appendChild(opt);
       }});
     }}
 
-    populateFilter('selCountry', JOBS.map(j => j.country));
-    populateFilter('selCity', JOBS.map(j => j.city));
-    populateFilter('selCompany', JOBS.map(j => j.company));
-    populateFilter('selVisa', JOBS.map(j => j.visaCat));
-    populateFilter('selExp', JOBS.map(j => j.expCat));
+    function updateFilterDropdowns(jobs) {{
+      populateDropdown('selCountry', jobs.map(j => j.country), 'All Countries');
+      populateDropdown('selCity', jobs.map(j => j.city), 'All Locations');
+      populateDropdown('selCompany', jobs.map(j => j.company), 'All Companies');
+      populateDropdown('selVisa', jobs.map(j => j.visaCat), 'All Sponsorship');
+      populateDropdown('selExp', jobs.map(j => j.expCat), 'All Experience Fit');
+    }}
 
-    // Render Table
+    function updateStats(jobs) {{
+      const user = DATA.users[state.user] || {{}};
+      const currentJobs = jobs || (user.jobs || []);
+
+      document.getElementById('kpiTotal').textContent = currentJobs.length;
+      document.getElementById('kpiApplied').textContent = appliedJobs.size;
+      document.getElementById('kpiIndia').textContent = currentJobs.filter(j => j.country === 'India').length;
+      document.getElementById('kpiIntl').textContent = currentJobs.filter(j => j.country === 'UK' || j.country === 'Australia' || (j.country !== 'India' && j.country)).length;
+      document.getElementById('kpiVisa').textContent = currentJobs.filter(j => j.visaCat === 'Confirmed' || (j.visaCat && j.visaCat.includes('Plausible'))).length;
+      document.getElementById('kpiCompanies').textContent = new Set(currentJobs.map(j => j.company).filter(Boolean)).size;
+    }}
+
+    function renderCharts(jobs) {{
+      // 1. Top Hiring Companies Chart
+      const compCounts = {{}};
+      jobs.forEach(j => {{
+        if (j.company) compCounts[j.company] = (compCounts[j.company] || 0) + 1;
+      }});
+      const topComps = Object.entries(compCounts).sort((a,b) => b[1] - a[1]).slice(0, 10);
+
+      if (chartCompanyInstance) chartCompanyInstance.destroy();
+      chartCompanyInstance = new Chart(document.getElementById('chartCompany'), {{
+        type: 'bar',
+        data: {{
+          labels: topComps.map(c => c[0]),
+          datasets: [{{
+            data: topComps.map(c => c[1]),
+            backgroundColor: '#3b82f6',
+            borderRadius: 4
+          }}]
+        }},
+        options: {{
+          indexAxis: 'y',
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {{ legend: {{ display: false }} }},
+          scales: {{ x: {{ ticks: {{ stepSize: 1 }} }} }}
+        }}
+      }});
+
+      // 2. Roles by Location Chart
+      const locCounts = {{ 'India': 0, 'UK': 0, 'Australia': 0, 'Global / Other': 0 }};
+      jobs.forEach(j => {{
+        if (locCounts[j.country] !== undefined) {{
+          locCounts[j.country]++;
+        }} else {{
+          locCounts['Global / Other']++;
+        }}
+      }});
+      const activeLocs = Object.entries(locCounts).filter(([k, v]) => v > 0);
+
+      if (chartLocationInstance) chartLocationInstance.destroy();
+      chartLocationInstance = new Chart(document.getElementById('chartLocation'), {{
+        type: 'doughnut',
+        data: {{
+          labels: activeLocs.map(x => x[0]),
+          datasets: [{{
+            data: activeLocs.map(x => x[1]),
+            backgroundColor: ['#10b981', '#3b82f6', '#f59e0b', '#8b5cf6'],
+            borderWidth: 0
+          }}]
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {{ legend: {{ position: 'bottom' }} }}
+        }}
+      }});
+
+      // 3. Visa Sponsorship Chart
+      const visaCounts = {{}};
+      jobs.forEach(j => {{
+        const k = j.visaCat || 'Unknown';
+        visaCounts[k] = (visaCounts[k] || 0) + 1;
+      }});
+
+      if (chartVisaInstance) chartVisaInstance.destroy();
+      chartVisaInstance = new Chart(document.getElementById('chartVisa'), {{
+        type: 'doughnut',
+        data: {{
+          labels: Object.keys(visaCounts),
+          datasets: [{{
+            data: Object.values(visaCounts),
+            backgroundColor: ['#10b981', '#f59e0b', '#3b82f6', '#94a3b8'],
+            borderWidth: 0
+          }}]
+        }},
+        options: {{
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {{ legend: {{ position: 'bottom' }} }}
+        }}
+      }});
+    }}
+
     function renderTable() {{
+      const user = DATA.users[state.user] || {{}};
+      const userJobs = user.jobs || [];
       const tbody = document.getElementById('jobsTbody');
-      const filtered = JOBS.filter(j => {{
+
+      const filtered = userJobs.filter(j => {{
         const q = state.search.toLowerCase();
-        const matchesQ = !q || (j.company + ' ' + j.title + ' ' + j.location + ' ' + j.tech + ' ' + j.id).toLowerCase().includes(q);
+        const matchesQ = !q || (j.company + ' ' + j.title + ' ' + j.location + ' ' + j.tech + ' ' + j.id + ' ' + (j.matched_skills || []).join(' ')).toLowerCase().includes(q);
         const matchesCountry = !state.country || j.country === state.country;
         const matchesCity = !state.city || j.city === state.city;
         const matchesCompany = !state.company || j.company === state.company;
@@ -658,15 +911,15 @@ def build_dashboard():
         return (vA < vB ? -1 : vA > vB ? 1 : 0) * (state.sortAsc ? 1 : -1);
       }});
 
-      document.getElementById('rowCounter').textContent = `${{filtered.length}} of ${{JOBS.length}} roles`;
+      document.getElementById('rowCounter').textContent = `${{filtered.length}} of ${{userJobs.length}} roles for ${{user.name || state.user}}`;
 
       tbody.innerHTML = filtered.map(j => {{
         const isApplied = appliedJobs.has(j.id);
         const isSkipped = skippedJobs.has(j.id);
 
         const vClass = j.visaCat === 'Confirmed' ? 'badge-confirmed' :
-                       j.visaCat.includes('Plausible') ? 'badge-plausible' :
-                       j.visaCat.includes('N/A') ? 'badge-na' : 'badge-unknown';
+                       (j.visaCat && j.visaCat.includes('Plausible')) ? 'badge-plausible' :
+                       (j.visaCat && j.visaCat.includes('N/A')) ? 'badge-na' : 'badge-unknown';
 
         const eClass = j.expCat === 'Strong' ? 'badge-strong' :
                        j.expCat === 'Stretch' ? 'badge-stretch' : 'badge-good';
@@ -684,6 +937,12 @@ def build_dashboard():
           : `<button class="btn-icon" title="Not interested / Hide" onclick="toggleSkipped('${{j.id}}')">✕</button>`;
 
         const rowClass = isApplied ? 'is-applied' : isSkipped ? 'is-skipped' : '';
+
+        const skillBadges = (j.matched_skills && j.matched_skills.length)
+          ? j.matched_skills.slice(0, 3).map(s => `<span class="badge-skill">${{s}}</span>`).join('')
+          : '';
+
+        const fitNote = j.user_fit_reason ? `<div class="user-fit-note">🎯 ${{j.user_fit_reason}}</div>` : '';
 
         return `
           <tr class="${{rowClass}}">
@@ -706,6 +965,8 @@ def build_dashboard():
             <td><span class="badge ${{eClass}}">${{j.expCat}}</span></td>
             <td>
               <div>${{j.tech}}</div>
+              ${{fitNote}}
+              <div style="margin-top:4px;">${{skillBadges}}</div>
             </td>
             <td><span class="badge ${{vClass}}">${{j.visaCat}}</span></td>
             <td>
@@ -719,7 +980,6 @@ def build_dashboard():
       }}).join('');
     }}
 
-    // Toggle Applied state (persists in localStorage)
     window.toggleApplied = function(id) {{
       if (appliedJobs.has(id)) {{
         appliedJobs.delete(id);
@@ -727,13 +987,17 @@ def build_dashboard():
         appliedJobs.add(id);
         skippedJobs.delete(id);
       }}
-      localStorage.setItem('applied_jobs', JSON.stringify([...appliedJobs]));
-      localStorage.setItem('skipped_jobs', JSON.stringify([...skippedJobs]));
-      updateStats();
+      localStorage.setItem('applied_jobs_' + state.user, JSON.stringify([...appliedJobs]));
+      localStorage.setItem('skipped_jobs_' + state.user, JSON.stringify([...skippedJobs]));
+      if (state.user === 'chandan') {{
+        localStorage.setItem('applied_jobs', JSON.stringify([...appliedJobs]));
+        localStorage.setItem('skipped_jobs', JSON.stringify([...skippedJobs]));
+      }}
+      const user = DATA.users[state.user] || {{}};
+      updateStats(user.jobs || []);
       renderTable();
     }};
 
-    // Toggle Skipped state (persists in localStorage)
     window.toggleSkipped = function(id) {{
       if (skippedJobs.has(id)) {{
         skippedJobs.delete(id);
@@ -741,47 +1005,18 @@ def build_dashboard():
         skippedJobs.add(id);
         appliedJobs.delete(id);
       }}
-      localStorage.setItem('applied_jobs', JSON.stringify([...appliedJobs]));
-      localStorage.setItem('skipped_jobs', JSON.stringify([...skippedJobs]));
-      updateStats();
+      localStorage.setItem('applied_jobs_' + state.user, JSON.stringify([...appliedJobs]));
+      localStorage.setItem('skipped_jobs_' + state.user, JSON.stringify([...skippedJobs]));
+      if (state.user === 'chandan') {{
+        localStorage.setItem('applied_jobs', JSON.stringify([...appliedJobs]));
+        localStorage.setItem('skipped_jobs', JSON.stringify([...skippedJobs]));
+      }}
+      const user = DATA.users[state.user] || {{}};
+      updateStats(user.jobs || []);
       renderTable();
     }};
 
-    // Copy personalized, professionally formatted LinkedIn referral message
-    window.copyReferral = function(id) {{
-      const j = JOBS.find(item => item.id === id);
-      if (!j) return;
-      const link = j.link && j.link.startsWith('http') ? j.link : '';
-      const focus = j.tech ? (j.tech.length > 85 ? j.tech.slice(0, 85) + '...' : j.tech) : 'recommender systems, LLMs & MLOps';
-
-      const savedName = localStorage.getItem('user_name') || '{user_name}';
-      const savedPhone = localStorage.getItem('user_phone') || '{user_phone}';
-      const savedEmail = localStorage.getItem('user_email') || '{user_email}';
-
-      const note = `Hi [Name],
-
-I hope you're having a great week!
-
-I noticed an open ${{j.title}} role at ${{j.company}}:
-${{link}}
-
-With ~6 years of experience in Machine Learning & Data Science (specializing in Python, PyTorch, Recommender Systems, LLMs/GenAI, and MLOps), my background in ${{focus}} aligns closely with the role requirements.
-
-Would you be open to connecting or referring me for this position? I would really appreciate it!
-
-Best regards,
-${{savedName}}
-📱 Phone: ${{savedPhone}}
-✉️ Email: ${{savedEmail}}`;
-
-      navigator.clipboard.writeText(note).then(() => {{
-        alert(`📋 Formatted LinkedIn Referral Message copied to clipboard for ${{j.company}}!\\n\\n${{note}}\\n\\nReady to paste directly into LinkedIn.`);
-      }}).catch(() => {{
-        prompt("Copy your LinkedIn Referral Note:", note);
-      }});
-    }};
-
-    function sortTable(key) {{
+    window.sortTable = function(key) {{
       if (state.sortKey === key) {{
         state.sortAsc = !state.sortAsc;
       }} else {{
@@ -789,7 +1024,23 @@ ${{savedName}}
         state.sortAsc = true;
       }}
       renderTable();
-    }}
+    }};
+
+    window.copyReferral = function(id) {{
+      const user = DATA.users[state.user] || {{}};
+      const j = (user.jobs || []).find(item => item.id === id);
+      if (!j) return;
+
+      const curName = localStorage.getItem('user_name_' + state.user) || user.name || 'Candidate';
+      const curPhone = localStorage.getItem('user_phone_' + state.user) || user.phone || '';
+      const curEmail = localStorage.getItem('user_email_' + state.user) || user.email || '';
+
+      const msg = `Hi [Name],\\n\\nI hope you're having a great week! I came across the ${{j.title}} opening at ${{j.company}} (${{j.id}}) and felt my background in ${{user.skills_summary || 'Machine Learning & AI'}} is a strong fit.\\n\\nCould you please refer me for this position?\\n- Name: ${{curName}}\\n- Email: ${{curEmail}}\\n- Phone: ${{curPhone}}\\n- Requisition / Link: ${{j.link}}\\n\\nThank you so much for your time and help!\\nBest regards,\\n${{curName}}`;
+
+      navigator.clipboard.writeText(msg).then(() => {{
+        alert(`Personalized referral message for ${{j.company}} copied to clipboard!`);
+      }});
+    }};
 
     // Event listeners
     document.getElementById('searchQ').addEventListener('input', e => {{
@@ -822,7 +1073,15 @@ ${{savedName}}
     }});
 
     document.getElementById('btnReset').addEventListener('click', () => {{
-      state = {{ search: '', status: 'all', country: '', city: '', company: '', visa: '', exp: '', sortKey: 'id', sortAsc: true }};
+      state.search = '';
+      state.status = 'all';
+      state.country = '';
+      state.city = '';
+      state.company = '';
+      state.visa = '';
+      state.exp = '';
+      state.sortKey = 'id';
+      state.sortAsc = true;
       document.getElementById('searchQ').value = '';
       document.getElementById('selStatus').value = 'all';
       document.getElementById('selCountry').value = '';
@@ -836,7 +1095,7 @@ ${{savedName}}
     document.getElementById('btnCopyApplied').addEventListener('click', () => {{
       const list = [...appliedJobs].join(', ');
       if (!list) {{
-        alert('No jobs marked as applied yet! Click "Mark Applied" on any row.');
+        alert('No jobs marked as applied yet for this candidate! Click "Mark Applied" on any row.');
         return;
       }}
       navigator.clipboard.writeText(list).then(() => {{
@@ -855,87 +1114,36 @@ ${{savedName}}
     }});
 
     document.getElementById('btnEditContact').addEventListener('click', () => {{
-      const curName = localStorage.getItem('user_name') || '{user_name}';
-      const curPhone = localStorage.getItem('user_phone') || '{user_phone}';
-      const curEmail = localStorage.getItem('user_email') || '{user_email}';
+      const user = DATA.users[state.user] || {{}};
+      const curName = localStorage.getItem('user_name_' + state.user) || user.name || '';
+      const curPhone = localStorage.getItem('user_phone_' + state.user) || user.phone || '';
+      const curEmail = localStorage.getItem('user_email_' + state.user) || user.email || '';
 
-      const n = prompt('Enter your Full Name for referral messages:', curName);
-      if (n !== null && n.trim()) localStorage.setItem('user_name', n.trim());
-
-      const p = prompt('Enter your Phone Number for referral messages:', curPhone);
-      if (p !== null && p.trim()) localStorage.setItem('user_phone', p.trim());
-
-      const e = prompt('Enter your Email Address for referral messages:', curEmail);
-      if (e !== null && e.trim()) localStorage.setItem('user_email', e.trim());
-
-      alert('✅ Contact details saved! Every "Referral Note" will now include your updated name, phone, and email.');
-    }});
-
-    renderTable();
-
-    // Render Charts
-    const compCounts = {{}};
-    JOBS.forEach(j => compCounts[j.company] = (compCounts[j.company] || 0) + 1);
-    const topComps = Object.entries(compCounts).sort((a,b) => b[1] - a[1]).slice(0, 10);
-
-    new Chart(document.getElementById('chartCompany'), {{
-      type: 'bar',
-      data: {{
-        labels: topComps.map(c => c[0]),
-        datasets: [{{
-          data: topComps.map(c => c[1]),
-          backgroundColor: '#3b82f6',
-          borderRadius: 4
-        }}]
-      }},
-      options: {{
-        indexAxis: 'y',
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{ legend: {{ display: false }} }},
-        scales: {{ x: {{ ticks: {{ stepSize: 1 }} }} }}
+      const n = prompt(`Enter Full Name for ${{user.name}}:`, curName);
+      if (n !== null && n.trim()) {{
+        localStorage.setItem('user_name_' + state.user, n.trim());
+        user.name = n.trim();
       }}
-    }});
 
-    const locCounts = {{ 'India': 0, 'UK': 0, 'Australia': 0 }};
-    JOBS.forEach(j => {{ if (locCounts[j.country] !== undefined) locCounts[j.country]++; }});
-
-    new Chart(document.getElementById('chartLocation'), {{
-      type: 'doughnut',
-      data: {{
-        labels: Object.keys(locCounts),
-        datasets: [{{
-          data: Object.values(locCounts),
-          backgroundColor: ['#10b981', '#3b82f6', '#f59e0b'],
-          borderWidth: 0
-        }}]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{ legend: {{ position: 'bottom' }} }}
+      const p = prompt(`Enter Phone Number for ${{user.name}}:`, curPhone);
+      if (p !== null && p.trim()) {{
+        localStorage.setItem('user_phone_' + state.user, p.trim());
+        user.phone = p.trim();
       }}
-    }});
 
-    const visaCounts = {{}};
-    JOBS.forEach(j => visaCounts[j.visaCat] = (visaCounts[j.visaCat] || 0) + 1);
-
-    new Chart(document.getElementById('chartVisa'), {{
-      type: 'doughnut',
-      data: {{
-        labels: Object.keys(visaCounts),
-        datasets: [{{
-          data: Object.values(visaCounts),
-          backgroundColor: ['#10b981', '#f59e0b', '#3b82f6', '#94a3b8'],
-          borderWidth: 0
-        }}]
-      }},
-      options: {{
-        responsive: true,
-        maintainAspectRatio: false,
-        plugins: {{ legend: {{ position: 'bottom' }} }}
+      const e = prompt(`Enter Email Address for ${{user.name}}:`, curEmail);
+      if (e !== null && e.trim()) {{
+        localStorage.setItem('user_email_' + state.user, e.trim());
+        user.email = e.trim();
       }}
+
+      switchUser(state.user);
+      alert('Contact details updated for ' + user.name);
     }});
+
+    // Initialize application
+    initUserDropdowns();
+    switchUser(state.user);
   </script>
 </body>
 </html>
@@ -943,7 +1151,7 @@ ${{savedName}}
     out_html = PROJECT_DIR / "index.html"
     with open(out_html, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"Generated standalone web dashboard with interactive application tracking at {out_html}")
+    print(f"[build_site] Generated standalone web dashboard with multi-user filtering at {out_html}")
 
 if __name__ == "__main__":
     build_dashboard()
